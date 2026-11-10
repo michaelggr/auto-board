@@ -1,0 +1,9 @@
+node_modules/
+.next/
+data/
+data-test/
+*.db
+*.db-wal
+*.db-shm
+.env
+spike/geek-log-sample.txt
