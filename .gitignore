@@ -7,3 +7,4 @@ data-test/
 *.db-shm
 .env
 spike/geek-log-sample.txt
+tsconfig.tsbuildinfo
