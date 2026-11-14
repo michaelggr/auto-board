@@ -34,6 +34,17 @@ describe('GeekSession 状态机', () => {
     expect((s.client as GatewayLike & { calls: string[] }).calls).toContain('getGraphList');
   });
 
+  it('once 监听器只在首次 connected 触发一次', async () => {
+    const events: string[] = [];
+    const onceEvents: string[] = [];
+    const s = new GeekSession(() => fakeClient({}), 'http://gw', (e) => events.push(e));
+    s.addOnceListener((e) => onceEvents.push(e));
+    await s.connect('123456');
+    await s.connect('234567');
+    expect(events).toEqual(['connected', 'connected']);
+    expect(onceEvents).toEqual(['connected']);
+  });
+
   it('认证失败 → disconnected 且记录错误（登录码一次性提示透传）', async () => {
     const s = new GeekSession(() => fakeClient({ auth: 'fail' }), 'http://gw', () => {});
     await expect(s.connect('123456')).rejects.toThrow('登录码已被使用');

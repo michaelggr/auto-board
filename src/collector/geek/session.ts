@@ -23,12 +23,17 @@ export class GeekSession {
   connectedAt?: number;
   client: GatewayLike | null = null;
   private heartbeat?: NodeJS.Timeout;
+  private onEventOnce: ((e: SessionEvent) => void)[] = [];
 
   constructor(
     private makeClient: () => GatewayLike,
     private url: string,
     private onEvent: (e: SessionEvent) => void,
   ) {}
+
+  addOnceListener(fn: (e: SessionEvent) => void): void {
+    this.onEventOnce.push(fn);
+  }
 
   /** 输码建连（唯一人工干预点）。失败保留错误信息供前端展示。 */
   async connect(code: string): Promise<void> {
@@ -49,6 +54,8 @@ export class GeekSession {
     this.lastError = undefined;
     this.startHeartbeat();
     this.onEvent('connected');
+    for (const fn of this.onEventOnce) fn('connected');
+    this.onEventOnce = [];
   }
 
   /** 会话内 API 调用：断线后所有采集任务都会在入口抛错并被调度层吞掉 */
