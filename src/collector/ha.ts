@@ -143,5 +143,10 @@ export function startHaWs(db: DB, onEvent?: (inserted: number) => void): { stop(
     ws?.send(JSON.stringify({ id: ++msgId, type: 'ping' }));
   }, 30_000);
 
-  return { stop() { alive = false; clearInterval(pinger); try { ws?.close(); } catch {} }, isConnected: () => connected };
+  const handle = {
+    stop() { alive = false; clearInterval(pinger); try { ws?.close(); } catch {} (globalThis as Record<string, unknown>).__abHaWs = undefined; },
+    isConnected: () => connected,
+  };
+  (globalThis as Record<string, unknown>).__abHaWs = handle;   // health 端点读取用
+  return handle;
 }
