@@ -1,0 +1,11 @@
+services:
+  auto-board:
+    build: .
+    image: auto-board:latest
+    container_name: auto-board
+    # 极客版网关与 HA 都在局域网：host 网络最省事（设计 §9）
+    network_mode: host
+    env_file: .env            # HOST/HA_URL/HA_TOKEN/GATEWAY_URL/DB_PATH 等全部来自 .env
+    volumes:
+      - ./data:/app/data       # SQLite + 每日备份（/app/data/backup，保留 7 份滚动）
+    restart: unless-stopped
