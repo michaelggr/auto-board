@@ -20,7 +20,7 @@ export async function GET(req: Request) {
         SELECT 1 FROM rule_pairs p
         WHERE (a.source='ha' AND p.ha_key=a.key) OR (a.source='geek' AND p.geek_key=a.key)
       ) THEN 1 ELSE 0 END AS paired,
-      la.id AS lastActionId, la.action AS lastAction, la.undone AS lastActionUndone, la.created_at AS lastActionAt
+      la.id AS lastActionId, la.action AS lastAction, la.result AS lastActionResult, la.undone AS lastActionUndone, la.created_at AS lastActionAt
     FROM automations a
     LEFT JOIN actions la ON la.id = (
       SELECT id FROM actions WHERE source=a.source AND key=a.key ORDER BY id DESC LIMIT 1
