@@ -1,11 +1,27 @@
 services:
   auto-board:
-    build: .
-    image: auto-board:latest
+    # 从 GitHub Container Registry 拉取预构建镜像，NAS 免本地编译
+    image: ghcr.io/michaelggr/auto-board:latest
     container_name: auto-board
     # 极客版网关与 HA 都在局域网：host 网络最省事（设计 §9）
     network_mode: host
-    env_file: .env            # HOST/HA_URL/HA_TOKEN/GATEWAY_URL/DB_PATH 等全部来自 .env
+    # 环境变量直接写在此处（部署时按实际内网修改）；也可用同目录 .env 覆盖
+    env_file: .env
+    environment:
+      # HOST 必须是 NAS 的内网 IP，禁止 0.0.0.0（host 网络下显式绑定，设计 §9）
+      HOST: ${HOST:-<NAS内网IP>}
+      PORT: ${PORT:-3423}
+      TZ: ${TZ:-Asia/Shanghai}
+      # Home Assistant
+      HA_URL: ${HA_URL:-http://<HA内网IP>:8123}
+      HA_TOKEN: ${HA_TOKEN:-<HA长期访问令牌>}
+      # 米家极客版中枢网关
+      GATEWAY_URL: ${GATEWAY_URL:-http://<网关内网IP>}
+      # 数据库路径（挂载卷内）
+      DB_PATH: ${DB_PATH:-/app/data/auto-board.db}
+      # 看板访问令牌（不设则每次启动随机生成并打印到容器日志）
+      # BOARD_TOKEN: ${BOARD_TOKEN:-}
     volumes:
-      - ./data:/app/data       # SQLite + 每日备份（/app/data/backup，保留 7 份滚动）
+      # SQLite + 每日备份（/app/data/backup，保留 7 份滚动）
+      - ./data:/app/data
     restart: unless-stopped
