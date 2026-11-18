@@ -35,7 +35,8 @@ export async function syncGeekList(db: DB, s: GeekSession): Promise<void> {
     const seen = new Set<string>();
     for (const r of list) {
       seen.add(r.id);
-      up.run(r.id, r.name, null, r.enabled ? 1 : 0, now, now);
+      // 部分规则可能未命名（name 为 null/空），回退用 graph ID，避免 automations.name NOT NULL 约束失败
+      up.run(r.id, r.name || r.id, null, r.enabled ? 1 : 0, now, now);
     }
     const active = db.prepare(`SELECT key FROM automations WHERE source='geek' AND deleted_at IS NULL`)
       .all() as { key: string }[];
@@ -45,7 +46,7 @@ export async function syncGeekList(db: DB, s: GeekSession): Promise<void> {
     // 名称映射可能改名或复用，每轮以最新清单全量重建。
     db.prepare('DELETE FROM name_index').run();
     const ni = db.prepare('INSERT OR REPLACE INTO name_index VALUES (?,?,?)');
-    for (const r of list) ni.run(r.name, r.id, now);
+    for (const r of list) ni.run(r.name || r.id, r.id, now);
   })();
 
   // 设备清单缓存 + 房间反推 + cfg 快照（逐规则 getGraph，hash 变化才落快照）。
