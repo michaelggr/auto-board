@@ -1,34 +1,38 @@
 import { describe, it, expect } from 'vitest';
 import { parseGeekLogPage } from '@/collector/geek/logParser';
 
+// 真实网关前端 v3 日志行结构：3|时间戳|类型|规则ID|...
+// 类型含义来自网关前端解析器：r=规则启停、i=节点信息、l=连线、e=错误。
 const PAGE = [
-  '2026-11-05 08:00:00 [规则] 规则启用: 回家自动开灯',
-  '2026-11-05 08:00:01 [设备] 人体传感器 触发',
-  '2026-11-05 08:00:01 [动作] 筒灯 打开',
-  '2026-11-05 08:05:00 [规则] 规则启用: 定时关灯',
-  '2026-11-05 08:05:00 [动作] 走廊灯 关闭',
-  '一行没有时间戳的垃圾文本',
+  '3|1795000000000|r|1001|{"enable":true}',
+  '3|1795000000001|i|1001|node-1|success',
+  '3|1795000000002|l|1001|sensor.trigger|light.open|true',
+  '3|1795000000003|e|1001|light|1|timeout',
+  '3|1795000000004|r|1002|{"enable":false}',
+  'bad-line',
 ].join('\n');
 
 describe('parseGeekLogPage', () => {
-  it('三分类识别 + 组头行标记 + kind 映射', () => {
+  it('解析 v3 管道日志，并把规则启用行作为分组起点', () => {
     const lines = parseGeekLogPage(PAGE, 0);
-    expect(lines).toHaveLength(6);
-    // [规则] 行 = 组头；[设备]/[动作] 跟随；坏行标 parse_error 但不丢弃
-    expect(lines.map((l) => [l.kind, l.isGroupStart])).toEqual([
-      ['rule', true], ['device', false], ['action', false],
-      ['rule', true], ['action', false], ['parse_error', false],
+    expect(lines.map((l) => [l.kind, l.isGroupStart, l.graphKey])).toEqual([
+      ['rule', true, '1001'],
+      ['device', false, '1001'],
+      ['action', false, '1001'],
+      ['other', false, '1001'],
+      ['rule', false, '1002'],
+      ['parse_error', false, undefined],
     ]);
-    expect(lines[0].ts).toBe(Date.UTC(2026, 10, 5, 0, 0, 0)); // 本地 08:00 = UTC 00:00
-    expect(lines[0].name).toBe('规则启用: 回家自动开灯');
-    expect(lines[5].raw).toBe('一行没有时间戳的垃圾文本');
+    expect(lines[0].ts).toBe(1795000000000);
+    expect(lines[0].name).toBe('规则启用');
+    expect(lines[4].name).toBe('规则停用');
   });
 
-  it('无年份行用水位推断年份；未知标签归 other；空页返回 []', () => {
-    const wm = Date.UTC(2026, 10, 5, 2, 0, 0); // 本地 2026-11-05 10:00
-    const lines = parseGeekLogPage('11-05 09:00:00 [变量] 某未知分类', 0, wm);
-    expect(lines[0].ts).toBe(Date.UTC(2026, 10, 5, 1, 0, 0));
-    expect(lines[0].kind).toBe('other');
-    expect(parseGeekLogPage('', 0, wm)).toEqual([]);
+  it('秒级时间戳归一化为毫秒，非法行返回 parse_error，空页返回 []', () => {
+    const lines = parseGeekLogPage('3|1795000000|r|1001|{"enable":true}', 0);
+    expect(lines[0].ts).toBe(1795000000000);
+    expect(lines[0].graphKey).toBe('1001');
+    expect(parseGeekLogPage('3|bad|r|1001|{}', 0)[0]).toMatchObject({ kind: 'parse_error', ts: null });
+    expect(parseGeekLogPage('', 0)).toEqual([]);
   });
 });

@@ -6,6 +6,10 @@ import { GeekSession } from './session';
 
 const sha1 = (s: string) => crypto.createHash('sha1').update(s).digest('hex');
 
+// 网关真实清单字段：名称在 userData.name，启停状态在 enable；未命名时回退规则 ID。
+function geekRuleName(rule: any): string { return rule.userData?.name || rule.id; }
+function geekRuleEnabled(rule: any): number { return rule.enable ? 1 : 0; }
+
 function recordRun(db: DB, source: string, job: string, startedAt: number,
   o: { status: string; watermark?: number; gapFrom?: number; gapTo?: number; detail?: string }) {
   db.prepare(`INSERT INTO sync_runs (source, job, status, started_at, finished_at, watermark, gap_from, gap_to, detail)
@@ -17,7 +21,7 @@ function recordRun(db: DB, source: string, job: string, startedAt: number,
 /**
  * 清单 + cfg 存档 + 房间反推（5 min 一轮）：
  * - getGraphList → automations upsert（消失标 deleted_at，改名不断历史）
- * - name_index 全量重建（getLog 文本只有规则名）
+ * - name_index 全量重建（兼容历史按规则名回溯的旧事件；v3 新日志直接带规则 ID）
  * - getDevList → kv 缓存（房间反推的依据）
  * - 每规则 getGraph：cfg hash 变化才写快照；room = 第一个设备节点的 roomName
  */
@@ -35,8 +39,8 @@ export async function syncGeekList(db: DB, s: GeekSession): Promise<void> {
     const seen = new Set<string>();
     for (const r of list) {
       seen.add(r.id);
-      // 部分规则可能未命名（name 为 null/空），回退用 graph ID，避免 automations.name NOT NULL 约束失败
-      up.run(r.id, r.name || r.id, null, r.enabled ? 1 : 0, now, now);
+      // 真实字段是 userData.name / enable；未命名时回退 graph ID，避免 name NOT NULL 约束失败。
+      up.run(r.id, geekRuleName(r), null, geekRuleEnabled(r), now, now);
     }
     const active = db.prepare(`SELECT key FROM automations WHERE source='geek' AND deleted_at IS NULL`)
       .all() as { key: string }[];
@@ -46,7 +50,7 @@ export async function syncGeekList(db: DB, s: GeekSession): Promise<void> {
     // 名称映射可能改名或复用，每轮以最新清单全量重建。
     db.prepare('DELETE FROM name_index').run();
     const ni = db.prepare('INSERT OR REPLACE INTO name_index VALUES (?,?,?)');
-    for (const r of list) ni.run(r.name || r.id, r.id, now);
+    for (const r of list) ni.run(geekRuleName(r), r.id, now);
   })();
 
   // 设备清单缓存 + 房间反推 + cfg 快照（逐规则 getGraph，hash 变化才落快照）。
@@ -84,7 +88,7 @@ function setKv(db: DB, k: string, v: string): void {
  * getLog 采集（1 min 一轮）：
  * - 水位从 kv 读（首次 0 → 拉缓冲区现有全部，num=0 起向后翻页）
  * - 行 ts <= 水位跳过；整页无新行 → 停止翻页（两种页序语义下都收敛）
- * - 组装分组：[规则] 组头行锚定 group_id；无组头的接续行归入内存最近组
+ * - 组装分组：规则启用行锚定 group_id；v3 每行自带 graphKey，优先直接归因到规则
  * - dedup = key + 行时间 + 行内容 hash（页码/行号会漂移，绝不作键）
  * - 幂等/限流走 ingest；水位推进 = 本批新行 max ts
  * - gap 检测：本批最旧新行与水位差 > 10min → markGap
@@ -94,6 +98,8 @@ export async function collectGeekLog(db: DB, s: GeekSession): Promise<void> {
   const watermark = Number(getKv(db, 'geek_watermark') || 0);
   const nameRows = db.prepare('SELECT name, geek_key FROM name_index').all() as { name: string; geek_key: string }[];
   const nameMap = new Map(nameRows.map((r) => [r.name, r.geek_key]));
+  // v3 日志自带规则 ID；只有缺少 graphKey 的旧格式才回退到名称映射。
+  const keyOf = (l: ParsedLine) => l.graphKey ?? nameMap.get(ruleNameOf(l)) ?? ruleNameOf(l);
   const events: NewEvent[] = [];
   let lastGroupId: string | null = null;
   let lastGroupKey: string | null = null;
@@ -107,21 +113,18 @@ export async function collectGeekLog(db: DB, s: GeekSession): Promise<void> {
     const lines = parseGeekLogPage(text, num, watermark || undefined);
     const fresh = lines.filter((l): l is ParsedLine & { ts: number } => l.ts !== null && l.ts > watermark);
     for (const l of fresh) {
+      const key = keyOf(l);
       if (l.isGroupStart) {
-        const ruleName = ruleNameOf(l);
-        const key = nameMap.get(ruleName) ?? ruleName;
         lastGroupKey = key;
         lastGroupId = `${key}|${l.ts}`;
         groupLineNo = 0;
         events.push(mkEv(key, l, num, groupLineNo, true, lastGroupId));
-      } else if (lastGroupId && lastGroupKey) {
-        // 明细行继承当前组头的规则 key，不能从设备名或动作名猜规则。
+      } else if (lastGroupId && lastGroupKey === key) {
+        // 同一规则的明细行继承当前组头的 group_id 与组内行号。
         groupLineNo += 1;
-        events.push(mkEv(lastGroupKey, l, num, groupLineNo, false, lastGroupId));
+        events.push(mkEv(key, l, num, groupLineNo, false, lastGroupId));
       } else {
-        // 重启首批可能从组中间开始：孤行保守保留，但不伪造分组与组内行号。
-        const ruleName = ruleNameOf(l);
-        const key = nameMap.get(ruleName) ?? ruleName;
+        // 规则停用等非起点行，或换规则后的首行：保留事件，但不伪造分组与行号。
         events.push(mkEv(key, l, num, null, false));
       }
       oldestNew = Math.min(oldestNew, l.ts);
