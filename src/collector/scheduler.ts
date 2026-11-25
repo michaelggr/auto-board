@@ -2,7 +2,7 @@ import type { DB } from '@/lib/db';
 import { getGeekSession } from './geek/session';
 import { syncGeekList, collectGeekLog } from './geek/sync';
 import { logbookBackfill, syncHaList, startHaWs } from './ha';
-import { cleanupOldEvents, dailyBackup } from '@/ingest/maint';
+import { cleanupOldEvents, dailyBackup, checkpointWal } from '@/ingest/maint';
 import { getConfig } from '@/lib/config';
 
 /** 串行队列：SQLite 单写者模型下所有写库任务经此串行（避免并发写与锁竞争） */
@@ -54,8 +54,10 @@ export function startCollector(db: DB): void {
     });
   }
 
-  // ---- 维护：清理 6h / 备份 24h ----
+  // ---- 维护：WAL 合并 30min / 清理 6h / 备份 24h ----
   registerOnce('__ab_maint', () => {
+    // 定期强制合并 WAL，防止高写入下自动 checkpoint 饿死导致磁盘被撑爆
+    setInterval(() => queue.run(async () => checkpointWal(db)).catch((e) => log('checkpoint', e)), 30 * 60_000);
     setInterval(() => queue.run(async () => cleanupOldEvents(db, 30)).catch((e) => log('cleanup', e)), 6 * 3_600_000);
     setInterval(() => queue.run(async () => dailyBackup(db, cfg.dataDir)).catch((e) => log('backup', e)), 24 * 3_600_000);
   });
